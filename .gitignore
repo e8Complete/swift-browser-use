@@ -37,3 +37,20 @@ next-env.d.ts
 
 # files copied from npm modules
 public/
+
+
+# Python backend specific ignores
+backend/.venv/
+backend/__pycache__/
+backend/*.pyc
+backend/.env # IMPORTANT: Keep backend secrets out of git
+backend/*.db # If using sqlite
+backend/*.log
+backend/agent_history.gif # Default gif output
+backend/AgentHistory.json # Default history output
+backend/*.pdf # PDF output from save_pdf action
+backend/*.html # HTML output from save_html action
+
+# IDE files
+.idea/
+.vscode/

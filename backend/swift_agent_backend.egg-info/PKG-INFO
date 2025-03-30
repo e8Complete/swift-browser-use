@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: swift-agent-backend
+Version: 0.1.0
+Requires-Python: >=3.11
+Requires-Dist: fastapi>=0.110.0
+Requires-Dist: uvicorn[standard]>=0.27.1
+Requires-Dist: browser-use>=0.1.40
+Requires-Dist: langchain-openai>=0.1.0
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: websockets>=12.0
+Requires-Dist: httpx>=0.27.0

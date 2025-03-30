@@ -1,0 +1,6 @@
+pyproject.toml
+swift_agent_backend.egg-info/PKG-INFO
+swift_agent_backend.egg-info/SOURCES.txt
+swift_agent_backend.egg-info/dependency_links.txt
+swift_agent_backend.egg-info/requires.txt
+swift_agent_backend.egg-info/top_level.txt
