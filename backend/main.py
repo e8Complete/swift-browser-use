@@ -5,16 +5,18 @@ import base64
 import logging
 import os
 import uuid
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, List
 
 import uvicorn
-from browser_use import Agent, Browser, BrowserConfig
-from browser_use.agent.views import AgentHistoryList, AgentState, BrowserStateHistory # Import necessary views
+from browser_use import Agent, Browser, BrowserConfig, AgentHistoryList
+from browser_use.agent.views import AgentState, BrowserStateHistory # Import necessary views
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status, APIRouter, Header
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import HumanMessage # Import for context injection
 from pydantic import BaseModel
+import time # For timestamps
 
 # --- Load Environment Variables ---
 # Ensure this runs before other imports that might depend on env vars
@@ -23,7 +25,12 @@ load_dotenv()
 # --- Basic Logging Setup ---
 # Configure logging level (consider using BROWSER_USE_LOGGING_LEVEL if set)
 log_level_str = os.getenv("BROWSER_USE_LOGGING_LEVEL", "INFO").upper()
-logging.basicConfig(level=getattr(logging, log_level_str, logging.INFO))
+log_format = '%(asctime)s - %(levelname)s - [%(name)s] %(message)s'
+logging.basicConfig(level=getattr(logging, log_level_str, logging.INFO), format=log_format)
+# Suppress overly verbose logs from libraries if needed
+# logging.getLogger("websockets.server").setLevel(logging.WARNING)
+# logging.getLogger("websockets.protocol").setLevel(logging.WARNING)
+# logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
@@ -93,24 +100,20 @@ def get_llm_instance() -> BaseChatModel:
 app = FastAPI(title="Swift Agent Backend")
 
 # --- CORS Configuration ---
-# Make sure frontend URLs are correctly listed
-origins = [
-    "http://localhost:3000", # Default Next.js dev port
-    # Add your deployed frontend URL here, e.g.:
-    # "https://your-swift-deployment.vercel.app",
-]
+origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+logger.info(f"Configuring CORS allowed origins: {origins}")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"], # Allows all methods
-    allow_headers=["*"], # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # --- Agent Management State ---
 # Using simple dictionaries for state. Consider Redis/DB for production scalability.
 agents: Dict[str, Agent] = {}
-agent_status: Dict[str, str] = {} # e.g., "idle", "running", "done_success", "done_failure", "error"
+agent_status: Dict[str, str] = {} # e.g., "idle", "running", "awaiting_input", "done_success", "error"
 websockets: Dict[str, WebSocket] = {}
 agent_tasks: Dict[str, asyncio.Task] = {} # Stores the asyncio task running the agent
 
@@ -120,6 +123,7 @@ agent_tasks: Dict[str, asyncio.Task] = {} # Stores the asyncio task running the 
 browser_headless = os.getenv("BROWSER_HEADLESS", "False").lower() in ('true', '1', 't')
 # Add more browser config vars as needed
 shared_browser = Browser(config=BrowserConfig(headless=browser_headless))
+logger.info(f"Browser configured (headless={browser_headless})")
 
 # --- Pydantic Models for API ---
 class TaskRequest(BaseModel):
@@ -138,45 +142,119 @@ async def send_update(session_id: str, data: Dict[str, Any]):
     if ws:
         try:
             await ws.send_json(data)
-            # logger.debug(f"WS Sent to {session_id}: {data.get('type')}")
         except Exception as e:
             logger.warning(f"WebSocket send error for session {session_id}: {e}. Removing client.")
-            websockets.pop(session_id, None) # Remove broken connection
+            websockets.pop(session_id, None)
 
-# --- Agent Callback Functions ---
-async def done_callback(history: Optional[AgentHistoryList], session_id: str): # history can be None on error
-    """Callback executed when the agent's run() method finishes or errors."""
-    if session_id not in agent_status and session_id not in agents: # Check both
-        logger.warning(f"done_callback called for non-existent/cleaned-up session {session_id}")
+# --- Agent Step Simulation Helper (Replaces direct hook) ---
+# This task runs alongside the agent to periodically check state and send updates.
+async def agent_monitor_task(session_id: str, agent: Agent):
+    logger.info(f"Starting monitor task for session {session_id}")
+    last_sent_step = -1
+    last_sent_goal = ""
+    last_sent_action = ""
+
+    while session_id in agents and agent_status.get(session_id) == "running":
+        await asyncio.sleep(1.5) # Check every 1.5 seconds
+
+        if session_id not in agents: break # Agent was removed
+
+        try:
+            current_step = agent.state.n_steps
+            current_goal = "Waiting for next step..."
+            current_action = "Processing..."
+            screenshot_b64 = None
+
+            # Get latest info from history if available
+            if agent.state.history and agent.state.history.history:
+                last_history_item = agent.state.history.history[-1]
+                if last_history_item.model_output:
+                     current_goal = last_history_item.model_output.current_state.next_goal
+                     if last_history_item.model_output.action:
+                         try:
+                             first_action_model = last_history_item.model_output.action[0]
+                             action_dump = first_action_model.model_dump(exclude_unset=True)
+                             action_name = list(action_dump.keys())[0]
+                             action_params = action_dump[action_name]
+                             params_str = str(action_params)
+                             if len(params_str) > 100: params_str = params_str[:100] + "..."
+                             current_action = f"{action_name}({params_str})"
+                         except Exception: current_action = "Error formatting action"
+
+                if isinstance(last_history_item.state, BrowserStateHistory) and last_history_item.state.screenshot:
+                    screenshot_b64 = last_history_item.state.screenshot
+
+            # Send status update only if something changed
+            if current_step != last_sent_step or current_goal != last_sent_goal or current_action != last_sent_action:
+                 await send_update(session_id, {
+                     "type": "status",
+                     "status": "running",
+                     "step": current_step,
+                     "goal": current_goal,
+                     "last_action": current_action,
+                     "timestamp": time.time()
+                 })
+                 last_sent_step = current_step
+                 last_sent_goal = current_goal
+                 last_sent_action = current_action
+
+            # Always send screenshot if available in the latest history step
+            if screenshot_b64:
+                logger.info(f"Sending screenshot for {session_id}")
+                await send_update(session_id, {
+                    "type": "screenshot",
+                    "data": screenshot_b64
+                })
+            else:
+                logger.info(f"No screenshot available for {session_id}")
+
+        except Exception as e:
+            logger.error(f"Error in agent_monitor_task for {session_id}: {e}")
+            # Optional: Send an error update via WebSocket
+            await asyncio.sleep(5) # Avoid tight loop on error
+
+    logger.info(f"Stopping monitor task for session {session_id}")
+
+# --- Agent Done Callback ---
+async def agent_done_callback(session_id: str, history: Optional[AgentHistoryList]):
+    """Called when agent.run() finishes or errors."""
+    if session_id not in agent_status: # Check status dict, as agent might be popped already
+        logger.warning(f"agent_done_callback called for cleaned-up session {session_id}")
         return
 
+    logger.info(f"Agent run finished for session {session_id}. Processing result...")
     try:
         success = history.is_successful() if history else False
-        final_result = history.final_result() if history else "Agent run finished with an error."
+        final_result = history.final_result() if history else "Agent run finished with an error or no history."
         status = "done_success" if success else "done_failure"
 
-        if not history: # If run failed with an exception before producing history
+        if not history: # Explicitly mark as error if history is None
              status = "error"
-             final_result = "Agent task failed unexpectedly."
+             final_result = "Agent task failed unexpectedly (no history)."
 
         agent_status[session_id] = status # Update final status
 
-        logger.info(f"Agent {session_id} finished. Status: {status}. Success: {success}. Result: {final_result}")
+        logger.info(f"Final status for {session_id}: {status}. Success: {success}. Result: '{final_result}'")
 
-        # --- Send final update ---
-        # Optionally, you could loop through history.history here and send
-        # intermediate steps if needed, but sending just the final result is simpler now.
-        final_screenshot = None
-        if history and history.history:
-            final_screenshot = history.history[-1].state.screenshot
-
+        # Send final 'done' message
         await send_update(session_id, {
             "type": "done",
             "status": status,
             "success": success,
-            "final_result": final_result
+            "final_result": final_result,
+            "timestamp": time.time()
         })
-        # Optionally send the final screenshot if available
+
+        # Send the very last screenshot if available
+        final_screenshot = None
+        if history and history.history:
+            try:
+                 # Ensure state is BrowserStateHistory before accessing screenshot
+                 if isinstance(history.history[-1].state, BrowserStateHistory):
+                     final_screenshot = history.history[-1].state.screenshot
+            except Exception as e:
+                 logger.warning(f"Could not get final screenshot for {session_id}: {e}")
+
         if final_screenshot:
              await send_update(session_id, {
                  "type": "screenshot",
@@ -184,105 +262,138 @@ async def done_callback(history: Optional[AgentHistoryList], session_id: str): #
              })
 
     except Exception as e:
-         logger.error(f"Error in done_callback for session {session_id}: {e}", exc_info=True)
+         logger.error(f"Error in agent_done_callback for session {session_id}: {e}", exc_info=True)
          agent_status[session_id] = "error"
          await send_update(session_id, {
              "type": "error",
              "status": "error",
-             "message": f"Error processing agent completion: {e}"
+             "message": f"Error processing agent completion: {e}",
+             "timestamp": time.time()
          })
     finally:
-        # Clean up agent resources
-        logger.info(f"Cleaning up resources for session {session_id}")
-        agents.pop(session_id, None) # Remove agent instance
-        agent_tasks.pop(session_id, None) # Remove task reference
-        # Let agent_status reflect the final outcome until a new task starts
-        # websockets.pop(session_id, None) # Keep WS open briefly to ensure 'done' message sends
+        # Agent instance is NOT removed here to allow conversation
+        # Need separate logic for timeout/cleanup later
+        agent_tasks.pop(session_id, None) # Task is finished
+        logger.info(f"Agent task removed for session {session_id}. Agent instance kept.")
 
 
 # --- API Endpoints ---
-@app.post("/agent/task", response_model=AgentResponse)
-async def run_agent_task(request: TaskRequest):
-    """Endpoint to start a new browser agent task."""
+@app.post("/agent/task", response_model=AgentResponse, status_code=status.HTTP_202_ACCEPTED)
+async def run_or_update_agent_task(request: TaskRequest):
+    """
+    Starts a new agent task or sends a message to an existing idle agent.
+    Returns 202 Accepted immediately, updates happen via WebSocket.
+    """
     session_id = request.session_id or str(uuid.uuid4())
+    task_description = request.task
 
-    # Check if an agent task is already running for this session
-    if session_id in agent_tasks and not agent_tasks[session_id].done():
-         raise HTTPException(status_code=409, detail=f"Agent is already running a task for session {session_id}.")
+    # Check if agent exists and is idle (ready for new input)
+    if session_id in agents and agent_status.get(session_id) not in ["running", "starting"]:
+        agent = agents[session_id]
+        logger.info(f"Adding message to existing agent {session_id}: '{task_description}'")
+        try:
+            # Inject message into agent's history
+            agent.message_manager._add_message_with_tokens(HumanMessage(content=task_description))
+            # Restart the agent's run loop (or trigger next step if possible)
+            # For now, we restart the run task if it's not already running
+            if session_id not in agent_tasks or agent_tasks[session_id].done():
+                agent_status[session_id] = "running" # Set status before starting task
+                await send_update(session_id, {"type": "status", "status": "running", "goal": "Processing new input..."})
 
-    logger.info(f"Received task for session {session_id}: '{request.task}'")
+                # --- Define wrapped done_callback ---
+                async def wrapped_done_callback(history: Optional[AgentHistoryList]):
+                     if session_id in agent_status: await agent_done_callback(session_id, history)
 
-    try:
-        # Get the configured LLM instance
-        llm = get_llm_instance()
-        logger.info(f"Using LLM: {llm.__class__.__name__}")
+                logger.info(f"Restarting agent.run for session {session_id}")
+                agent_run_task = asyncio.create_task(agent.run(max_steps=50))
 
-        # Prepare Agent Configuration
-        agent = Agent(
-            task=request.task,
-            llm=llm,
-            browser=shared_browser,
-            generate_gif=False,
-        )
+                def task_completion_handler(future: asyncio.Task):
+                    history_result: Optional[AgentHistoryList] = None
+                    if future.cancelled(): # Handle cancellation
+                         logger.info(f"Agent task for session {session_id} was cancelled.")
+                         agent_status[session_id] = "error" # Or 'cancelled'
+                         asyncio.create_task(send_update(session_id, {"type": "status", "status": "cancelled", "message": "Task cancelled"}))
+                         agents.pop(session_id, None); agent_tasks.pop(session_id, None)
+                    elif exception := future.exception(): # Handle errors
+                         logger.error(f"Agent task for session {session_id} failed: {exception}", exc_info=exception)
+                    else: # Handle success
+                         history_result = future.result()
+                    # Call done callback in all non-cancelled cases
+                    if not future.cancelled():
+                         asyncio.create_task(wrapped_done_callback(history_result))
 
-        # Store agent instance and initial status
-        agents[session_id] = agent
-        agent_status[session_id] = "starting"
+                agent_run_task.add_done_callback(task_completion_handler)
+                agent_tasks[session_id] = agent_run_task
+                # Start monitor task
+                asyncio.create_task(agent_monitor_task(session_id, agent))
 
-        # --- Define wrapped done_callback ONLY ---
-        async def wrapped_done_callback(history: Optional[AgentHistoryList]): # Accept Optional history
-             if session_id in agent_status: # Check status dict as agent might be popped
-                 await done_callback(history, session_id)
-             else:
-                  logger.warning(f"Done callback skipped for cleaned-up session {session_id}")
+                return AgentResponse(session_id=session_id, status="running", message="Agent task restarted with new input.")
+            else:
+                # Agent exists but task is somehow still marked as running - unusual state
+                logger.warning(f"Agent {session_id} exists but task is still active? Sending message only.")
+                await send_update(session_id, {"type": "system", "message": "New input added."}) # Inform user
+                return AgentResponse(session_id=session_id, status="running", message="Input added to running agent.")
 
-        # Run the agent's task in the background using asyncio.create_task
-        logger.info(f"Starting agent.run for session {session_id}")
-        # --- REMOVE on_step_end ---
-        agent_run_task = asyncio.create_task(
-             agent.run(max_steps=50) # No step callback passed
-        )
 
-        # --- Modify task completion handler slightly ---
-        def task_completion_handler(future: asyncio.Task):
-             history_result: Optional[AgentHistoryList] = None
-             if future.cancelled():
-                  logger.info(f"Agent task for session {session_id} was cancelled.")
-                  agent_status[session_id] = "error"
-                  asyncio.create_task(send_update(session_id, {"type": "status", "status": "cancelled", "message": "Task cancelled"}))
-                  agents.pop(session_id, None)
-                  agent_tasks.pop(session_id, None)
-                  return # Don't call done_callback on cancellation
+        except Exception as e:
+            logger.error(f"Error adding message to agent {session_id}: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to add message to agent: {e}")
 
-             elif exception := future.exception():
-                  logger.error(f"Agent task for session {session_id} failed: {exception}", exc_info=exception)
-                  # history_result remains None
-             else:
-                  # Task completed successfully, get history
-                  history_result = future.result() # This should be AgentHistoryList
+    # Check if agent is currently busy
+    elif session_id in agent_tasks and not agent_tasks[session_id].done():
+         logger.warning(f"Task rejected for session {session_id}: Agent already running.")
+         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Agent is already running a task for session {session_id}.")
 
-             # Call done_callback regardless of success/failure, passing history (or None)
-             asyncio.create_task(wrapped_done_callback(history_result))
+    # Start a new agent session
+    else:
+        logger.info(f"Starting new agent session {session_id} with task: '{task_description}'")
+        try:
+            llm = get_llm_instance()
+            logger.info(f"Using LLM: {llm.__class__.__name__}")
 
-        agent_run_task.add_done_callback(task_completion_handler)
+            agent = Agent(
+                task=task_description,
+                llm=llm,
+                browser=shared_browser,
+                generate_gif=False,
+            )
+            agents[session_id] = agent
+            agent_status[session_id] = "running" # Set status before starting task
 
-        # Store the task and update status
-        agent_tasks[session_id] = agent_run_task
-        agent_status[session_id] = "running" # Status update after scheduling
+            await send_update(session_id, {"type": "status", "status": "running", "goal": "Initializing..."})
 
-        logger.info(f"Agent task successfully scheduled for session {session_id}")
-        return AgentResponse(session_id=session_id, status="running", message="Agent task started.")
+             # --- Define wrapped done_callback ---
+            async def wrapped_done_callback(history: Optional[AgentHistoryList]):
+                 if session_id in agent_status: await agent_done_callback(session_id, history)
 
-    except HTTPException as http_exc:
-         # Re-raise specific HTTP exceptions (e.g., from LLM config)
-         logger.error(f"HTTP Exception during task start for {session_id}: {http_exc.detail}")
-         agent_status[session_id] = "error"
-         raise http_exc
-    except Exception as e:
-        logger.error(f"Generic Exception during task start for {session_id}: {e}", exc_info=True)
-        agent_status[session_id] = "error"
-        detail = f"Failed to start agent task: {e}"
-        raise HTTPException(status_code=500, detail=detail)
+
+            logger.info(f"Starting agent.run for new session {session_id}")
+            agent_run_task = asyncio.create_task(agent.run(max_steps=50)) # No step callback here
+
+            def task_completion_handler(future: asyncio.Task):
+                # (Same handler logic as above)
+                history_result: Optional[AgentHistoryList] = None
+                if future.cancelled(): # Handle cancellation
+                    logger.info(f"Agent task for session {session_id} was cancelled.")
+                    agent_status[session_id] = "error"
+                    asyncio.create_task(send_update(session_id, {"type": "status", "status": "cancelled", "message": "Task cancelled"}))
+                    agents.pop(session_id, None); agent_tasks.pop(session_id, None)
+                elif exception := future.exception(): # Handle errors
+                    logger.error(f"Agent task for session {session_id} failed: {exception}", exc_info=exception)
+                else: # Handle success
+                    history_result = future.result()
+                if not future.cancelled():
+                    asyncio.create_task(wrapped_done_callback(history_result))
+
+            agent_run_task.add_done_callback(task_completion_handler)
+            agent_tasks[session_id] = agent_run_task
+             # Start monitor task
+            asyncio.create_task(agent_monitor_task(session_id, agent))
+
+            return AgentResponse(session_id=session_id, status="running", message="New agent task started.")
+
+        except HTTPException as http_exc: raise http_exc
+        except Exception as e: raise HTTPException(status_code=500, detail=f"Failed to start agent task: {e}")
 
 @app.get("/agent/{session_id}/status")
 async def get_agent_status(session_id: str):
@@ -326,109 +437,140 @@ async def get_agent_status(session_id: str):
         "step": step
     }
 
-# --- WebSocket Endpoint ---
-@app.websocket("/ws/{session_id}")
-async def websocket_endpoint(websocket: WebSocket, session_id: str):
-    """Handles WebSocket connections for real-time agent updates."""
-    await websocket.accept()
-    websockets[session_id] = websocket
-    logger.info(f"WebSocket connected for session {session_id}")
+# --- WebSocket Router ---
+ws_router = APIRouter()
+
+@ws_router.websocket("/ws/{session_id}")
+async def websocket_endpoint(
+    websocket: WebSocket,
+    session_id: str,
+    origin: Optional[str] = Header(None)
+):
+    # --- Explicit Origin Check ---
+    allowed_origins = [o.strip() for o in os.getenv("WEBSOCKET_ALLOWED_ORIGINS", "http://localhost:3000").split(",")]
+    # Use a flag for wildcard or allow if origin header is missing (e.g., from websocat)
+    is_origin_allowed = (
+        "*" in allowed_origins or
+        origin is None or # Allow if no origin header (like websocat)
+        origin in allowed_origins
+    )
+
+    logger.info(f"WebSocket attempting connection for {session_id}. Origin: '{origin}'. Allowed: {allowed_origins}. Decision: {'Allow' if is_origin_allowed else 'Deny'}")
+
+    if not is_origin_allowed:
+        logger.warning(f"WebSocket connection rejected for {session_id} due to invalid origin: '{origin}'")
+        # Close before accepting if origin is invalid
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return # Important: Exit the function early
+
     try:
-        # Send initial status if agent already has one
-        initial_status = agent_status.get(session_id, "idle") # Default to idle if unknown
-        logger.info(f"Sending initial WS status for {session_id}: {initial_status}")
-        await send_update(session_id, {"type": "status", "status": initial_status, "goal": "Connecting..."})
+        await websocket.accept()
+        logger.info(f"WebSocket ACCEPTED for session {session_id}")
 
-        # Keep the connection alive, mostly for sending server->client updates
+        if session_id not in agent_status and session_id not in agents:
+            logger.warning(f"WebSocket accepted for unknown session {session_id}.")
+            agent_status[session_id] = "idle"
+        websockets[session_id] = websocket
+        initial_status = agent_status.get(session_id, "idle")
+        await send_update(session_id, {"type": "status", "status": initial_status, "goal": "Connected."})
+        if initial_status == "running" and session_id in agents and (session_id not in agent_tasks or agent_tasks[session_id].done()):
+            logger.info(f"Restarting monitor task for reconnected session {session_id}")
+            asyncio.create_task(agent_monitor_task(session_id, agents[session_id]))
+
         while True:
-            # We don't expect many messages from client in this setup,
-            # but can add handling here if needed (e.g., pause/resume commands)
-            # try:
-            #     data = await websocket.receive_text()
-            #     logger.debug(f"WS Received from {session_id}: {data}")
-            #     # Handle client messages if necessary
-            # except WebSocketDisconnect:
-            #     # This will be caught by the outer handler
-            #     break
-
-            # Periodic ping to keep connection alive (optional, depends on infra)
-            await asyncio.sleep(30)
-            await websocket.send_json({"type": "ping"})
-
-    except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected for session {session_id}")
+            try:
+                data = await websocket.receive_json()
+                logger.debug(f"WS Received from {session_id}: {data}")
+                if data.get("type") == "chat_message":
+                    content = data.get("content")
+                    if content and session_id in agents:
+                        agent = agents[session_id]
+                        current_status = agent_status.get(session_id)
+                        if current_status in ["running", "idle", "done_success", "done_failure", "error"]:
+                            logger.info(f"Injecting user message into agent {session_id}: '{content}'")
+                            agent.message_manager._add_message_with_tokens(HumanMessage(content=content))
+                            if current_status != "running":
+                                if session_id not in agent_tasks or agent_tasks[session_id].done():
+                                    agent_status[session_id] = "running"
+                                    await send_update(session_id, {"type": "status", "status": "running", "goal": "Processing new input..."})
+                                    async def wrapped_done_callback(history: Optional[AgentHistoryList]):
+                                        if session_id in agent_status: await agent_done_callback(session_id, history)
+                                    logger.info(f"Restarting agent.run via WS for session {session_id}")
+                                    agent_run_task = asyncio.create_task(agent.run(max_steps=50))
+                                    def task_completion_handler(future: asyncio.Task):
+                                        history_result: Optional[AgentHistoryList] = None
+                                        if not future.cancelled():
+                                            if exception := future.exception(): logger.error(f"Agent task {session_id} failed: {exception}", exc_info=exception)
+                                            else: history_result = future.result()
+                                            asyncio.create_task(wrapped_done_callback(history_result))
+                                        else: logger.info(f"Agent task {session_id} was cancelled.")
+                                    agent_run_task.add_done_callback(task_completion_handler)
+                                    agent_tasks[session_id] = agent_run_task
+                                    asyncio.create_task(agent_monitor_task(session_id, agent))
+                                else: logger.warning(f"WS message for {session_id}, task unexpectedly active."); await send_update(session_id, {"type": "system", "message": "Input added."})
+                            else: await send_update(session_id, {"type": "system", "message": "Input added."})
+                        else: await send_update(session_id, {"type": "error", "message": f"Agent busy/not ready (status: {current_status})."})
+                    else: await send_update(session_id, {"type": "error", "message": "Agent session not active."})
+            except WebSocketDisconnect:
+                logger.info(f"WebSocket disconnected for session {session_id}")
+                break
+            except Exception as e:
+                logger.error(f"Error processing WS message from {session_id}: {e}", exc_info=True)
+                try: await websocket.send_json({"type": "error", "message": f"Error processing message: {e}"})
+                except Exception: break
     except Exception as e:
-        logger.error(f"WebSocket error for session {session_id}: {e}", exc_info=True)
+        logger.error(f"Error during WebSocket accept/handling for {session_id}: {e}", exc_info=True)
     finally:
-        # Clean up WebSocket connection
-        logger.info(f"Cleaning up WebSocket for session {session_id}")
+        logger.info(f"Cleaning up WebSocket connection for session {session_id}")
         websockets.pop(session_id, None)
-        # Optionally try to close again, but it might already be closed
         try:
-            await websocket.close()
-        except Exception:
-            pass
+            if websocket.client_state != WebSocketDisconnect:
+                await websocket.close()
+        except Exception: pass
 
+# Include the WebSocket router in the main app
+app.include_router(ws_router)
 
 # --- Application Startup and Shutdown ---
 @app.on_event("startup")
 async def startup_event():
-    """Actions to perform on server startup."""
     logger.info("FastAPI application starting up...")
-    # Perform initial LLM configuration check
-    try:
-        get_llm_instance()
-        logger.info("Initial LLM configuration check successful.")
-    except Exception as e:
-        logger.critical(f"CRITICAL: Failed initial LLM configuration check: {e}. Fix config and restart.")
-        # Depending on deployment, you might want to exit or prevent startup
-        # For now, we'll log critically and let it continue, but it will fail on first request
-    # Initialize the shared browser (optional, can be lazy-loaded too)
-    # await shared_browser._init() # Pre-start the browser if desired
+    try: get_llm_instance(); logger.info("Initial LLM configuration check successful.")
+    except Exception as e: logger.critical(f"CRITICAL: Failed initial LLM configuration check: {e}. Fix config and restart.")
+    # await shared_browser._init() # Optional: Pre-start browser
     logger.info("Startup complete.")
-
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Actions to perform on server shutdown."""
     logger.info("FastAPI application shutting down...")
-    # Cancel any running agent tasks gracefully
-    active_tasks = list(agent_tasks.values()) # Copy values before iterating
+    active_tasks = list(agent_tasks.values())
     if active_tasks:
         logger.info(f"Cancelling {len(active_tasks)} running agent tasks...")
         for task in active_tasks:
-            if not task.done():
-                task.cancel()
-        # Allow some time for tasks to acknowledge cancellation
+            if not task.done(): task.cancel()
         await asyncio.gather(*active_tasks, return_exceptions=True)
         logger.info("Agent tasks cancelled.")
-
-    # Close WebSocket connections
-    active_websockets = list(websockets.values()) # Copy values
+    active_websockets = list(websockets.values())
     if active_websockets:
         logger.info(f"Closing {len(active_websockets)} WebSocket connections...")
         for ws in active_websockets:
-            try:
-                await ws.close(code=1001) # Going away
-            except Exception:
-                pass # Ignore errors on close
+            try: await ws.close(code=1001) # Going away
+            except Exception: pass
         logger.info("WebSocket connections closed.")
-
-    # Close the shared browser instance
     logger.info("Closing shared browser...")
     await shared_browser.close()
     logger.info("Shared browser closed.")
-
     logger.info("Shutdown complete.")
 
 # --- Main Execution Guard ---
 if __name__ == "__main__":
-    # Uvicorn setup for running directly (python main.py)
-    # Reload should generally be False for production, True for dev via command line
+    port = int(os.getenv("PORT", 8000))
+    host = os.getenv("HOST", "0.0.0.0")
+    logger.info(f"Starting Uvicorn on {host}:{port}")
     uvicorn.run(
         "main:app",
-        host="0.0.0.0",
-        port=int(os.getenv("PORT", 8000)), # Use PORT env var if available
-        log_level=log_level_str.lower(), # Use configured log level
-        reload=False # Uvicorn's reload is better handled via CLI flag (--reload)
+        host=host,
+        port=port,
+        log_level=log_level_str.lower(),
+        reload=False # Use --reload flag via CLI for development
     )

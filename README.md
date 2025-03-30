@@ -199,7 +199,7 @@ From the backend/ directory:
 ```bash
 cd backend
 # If using pip/venv, activate it: source .venv/bin/activate
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 API runs at http://localhost:8000
 

@@ -120,7 +120,7 @@ export default function Home() {
                 ws.onmessage = (event) => {
                     try {
                         const data: AgentUpdateData = JSON.parse(event.data as string);
-
+						console.log("Received WebSocket message:", data);
                         switch (data.type) {
                             case "status":
                                 setAgentStatus(data.status || "unknown");
@@ -306,6 +306,7 @@ export default function Home() {
 		<>
 			<div className="w-full max-w-5xl mb-6 p-4 border border-neutral-300 dark:border-neutral-700 rounded-lg bg-white dark:bg-black min-h-[400px] flex flex-col md:flex-row gap-4 shadow-sm">
 				<div className="flex-1 space-y-2 pr-4 border-r-0 md:border-r border-neutral-200 dark:border-neutral-800">
+				<button onClick={() => setSessionId('test-123')}>Connect WS Test</button>
 					<h2 className="text-lg font-semibold flex items-center gap-2">
                         Agent Status:
                         <span className={`font-mono text-xs px-2 py-0.5 rounded font-medium ${
