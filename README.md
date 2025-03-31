@@ -248,26 +248,66 @@ Example using browser console:
 ```javascript
 // Connect to test WebSocket
 const ws = new WebSocket("ws://localhost:8000/ws/test");
-
-// Listen for messages
-ws.onmessage = (event) => {
-  console.log("Received:", JSON.parse(event.data));
-};
-
-// Send test messages
-ws.send(JSON.stringify({ type: "ping" }));
-ws.send(JSON.stringify({ type: "echo", message: "Hello!" }));
-ws.send(JSON.stringify({ type: "status" }));
 ```
 
-This test route is useful for:
+## 🔄 Recent Updates
 
-- Verifying WebSocket connectivity
-- Testing CORS and security settings
-- Debugging client-side WebSocket handling
-- Development and integration testing
+### WebSocket Improvements
 
-Note: The test route is separate from the main agent WebSocket route (`/ws/{session_id}`) and is intended for development purposes only.
+- Enhanced WebSocket state handling using `WebSocketState` from Starlette
+- Improved connection state checks for more reliable message delivery
+- Better cleanup of disconnected WebSocket connections
+- Proper state comparison for WebSocket lifecycle management
+
+### Debug Information
+
+- Added comprehensive debug info extraction from agent runs
+- Debug payload includes:
+  - URLs visited
+  - Action names executed
+  - Extracted content
+  - Errors encountered
+  - Model actions taken
+- Improved error handling and logging throughout the application
+
+### Error Handling
+
+- Enhanced error handling in WebSocket communication
+- Better management of connection states and disconnections
+- Improved logging for debugging connection issues
+- Graceful handling of connection cleanup
+
+### Environment Variables
+
+The following new environment variables are available for configuration:
+
+```env
+# WebSocket allowed origins (comma-separated)
+WEBSOCKET_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+
+# Browser configuration
+BROWSER_HEADLESS=false  # Set to true for headless mode
+```
+
+## 🐛 Debugging
+
+### WebSocket Connection Issues
+
+If you encounter WebSocket connection problems:
+
+1. Check the allowed origins in your environment configuration
+2. Verify the WebSocket URL matches your deployment setup
+3. Monitor the backend logs for connection state changes
+4. Ensure proper cleanup of connections in development
+
+### Debug Information
+
+To access debug information during agent runs:
+
+1. Monitor the WebSocket messages for type "debug_info"
+2. Check the backend logs for detailed state extraction
+3. Review the agent's history for comprehensive debugging
+4. Use the status endpoint for current agent state
 
 ## 🚀 Deployment
 
