@@ -35,11 +35,13 @@ This repository contains both the frontend UI and the Python backend API in a mo
 The system works through these components:
 
 1. **Frontend (Browser)**:
+
    - Captures voice using VAD to detect speech
    - Sends audio blob to `/api/route.ts`
    - Displays agent progress via WebSocket updates
 
 2. **Next.js API Route**:
+
    - Receives audio and sends to configured STT service
    - Gets transcription and forwards to Python backend
 
@@ -82,6 +84,7 @@ cd swift-browser-use
 ```
 
 ### 2. Install Frontend Dependencies
+
 From the root directory:
 
 ```bash
@@ -90,6 +93,7 @@ pnpm add openai # Required if using OpenAI for STT
 ```
 
 ### 3. Install Backend Dependencies
+
 Navigate to the backend directory:
 
 ```bash
@@ -116,6 +120,7 @@ pip install -r requirements.txt
 ```
 
 ### 4. Install Playwright Browser
+
 After activating the virtual environment:
 
 ```bash
@@ -131,6 +136,7 @@ cd ..
 ### 6. Set Up Environment Variables
 
 #### Frontend (.env.local at the root)
+
 Copy `.env.example` to `.env.local`: `cp .env.example .env.local`
 
 Edit `.env.local`:
@@ -159,6 +165,7 @@ NEXT_PUBLIC_PYTHON_WS_URL=ws://localhost:8000
 ```
 
 #### Backend (backend/.env)
+
 Create this file inside the backend/ directory:
 
 ```env
@@ -179,6 +186,14 @@ AGENT_LLM_MODEL=llama3
 # AZURE_OPENAI_API_VERSION=...
 OLLAMA_BASE_URL=http://localhost:11434 # Default if using ollama
 
+# --- ElevenLabs Configuration ---
+# Get your API key from https://elevenlabs.io/
+ELEVENLABS_API_KEY=your_api_key_here
+# Optional: Set a specific voice ID (default will be used if not specified)
+ELEVENLABS_VOICE_ID=your_voice_id_here
+# Optional: Set model (defaults to 'eleven_monolingual_v1')
+ELEVENLABS_MODEL_ID=eleven_monolingual_v1
+
 # Optional backend logging level
 # BROWSER_USE_LOGGING_LEVEL=debug
 ```
@@ -186,14 +201,17 @@ OLLAMA_BASE_URL=http://localhost:11434 # Default if using ollama
 ### 7. Run the Development Servers
 
 #### Terminal 1 (Frontend)
+
 From the root directory:
 
 ```bash
 pnpm dev
 ```
+
 Access at http://localhost:3000
 
 #### Terminal 2 (Backend)
+
 From the backend/ directory:
 
 ```bash
@@ -201,6 +219,7 @@ cd backend
 # If using pip/venv, activate it: source .venv/bin/activate
 uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
+
 API runs at http://localhost:8000
 
 ### 8. Test
@@ -209,6 +228,46 @@ API runs at http://localhost:8000
 2. Grant microphone permissions
 3. Speak a command (e.g., "Open Google and search for cute cat videos")
 4. Watch the browser UI for transcription, status updates, and screenshots
+
+### 8. WebSocket Test Route
+
+The backend includes a test WebSocket route for development and debugging purposes. You can connect to it at:
+
+```
+ws://localhost:8000/ws/test
+```
+
+This route accepts the following message types:
+
+- `ping`: Server responds with `pong`
+- `echo`: Server echoes back the message
+- `status`: Server sends a mock status update
+
+Example using browser console:
+
+```javascript
+// Connect to test WebSocket
+const ws = new WebSocket("ws://localhost:8000/ws/test");
+
+// Listen for messages
+ws.onmessage = (event) => {
+  console.log("Received:", JSON.parse(event.data));
+};
+
+// Send test messages
+ws.send(JSON.stringify({ type: "ping" }));
+ws.send(JSON.stringify({ type: "echo", message: "Hello!" }));
+ws.send(JSON.stringify({ type: "status" }));
+```
+
+This test route is useful for:
+
+- Verifying WebSocket connectivity
+- Testing CORS and security settings
+- Debugging client-side WebSocket handling
+- Development and integration testing
+
+Note: The test route is separate from the main agent WebSocket route (`/ws/{session_id}`) and is intended for development purposes only.
 
 ## 🚀 Deployment
 
@@ -228,6 +287,7 @@ Deploy the Next.js app to Vercel, Netlify, etc:
 ### Backend (/backend)
 
 Deploy to a platform suitable for long-running Python processes:
+
 - Fly.io, Render, Cloud Run, Railway, DigitalOcean Apps, AWS EC2/ECS
 - Often deployed via Docker
 
