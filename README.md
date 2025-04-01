@@ -10,6 +10,7 @@ A voice-controlled web interface for interacting with a browser automation agent
 - **Browser Control**: Uses the `browser-use` library to automate browser actions based on voice commands
 - **Real-time Updates**: WebSockets for live agent status, goals, actions, and browser screenshots
 - **Modern Stack**: Built with Next.js (React) and Tailwind CSS, deployable on Vercel or similar platforms
+- **Debug Interface**: Draggable and minimizable debug panel showing real-time agent actions, screenshots, and extracted content
 
 ## 📋 Project Structure
 
@@ -35,11 +36,13 @@ This repository contains both the frontend UI and the Python backend API in a mo
 The system works through these components:
 
 1. **Frontend (Browser)**:
+
    - Captures voice using VAD to detect speech
    - Sends audio blob to `/api/route.ts`
    - Displays agent progress via WebSocket updates
 
 2. **Next.js API Route**:
+
    - Receives audio and sends to configured STT service
    - Gets transcription and forwards to Python backend
 
@@ -82,6 +85,7 @@ cd swift-browser-use
 ```
 
 ### 2. Install Frontend Dependencies
+
 From the root directory:
 
 ```bash
@@ -90,6 +94,7 @@ pnpm add openai # Required if using OpenAI for STT
 ```
 
 ### 3. Install Backend Dependencies
+
 Navigate to the backend directory:
 
 ```bash
@@ -116,6 +121,7 @@ pip install -r requirements.txt
 ```
 
 ### 4. Install Playwright Browser
+
 After activating the virtual environment:
 
 ```bash
@@ -131,6 +137,7 @@ cd ..
 ### 6. Set Up Environment Variables
 
 #### Frontend (.env.local at the root)
+
 Copy `.env.example` to `.env.local`: `cp .env.example .env.local`
 
 Edit `.env.local`:
@@ -159,6 +166,7 @@ NEXT_PUBLIC_PYTHON_WS_URL=ws://localhost:8000
 ```
 
 #### Backend (backend/.env)
+
 Create this file inside the backend/ directory:
 
 ```env
@@ -179,6 +187,14 @@ AGENT_LLM_MODEL=llama3
 # AZURE_OPENAI_API_VERSION=...
 OLLAMA_BASE_URL=http://localhost:11434 # Default if using ollama
 
+# --- ElevenLabs Configuration ---
+# Get your API key from https://elevenlabs.io/
+ELEVENLABS_API_KEY=your_api_key_here
+# Optional: Set a specific voice ID (default will be used if not specified)
+ELEVENLABS_VOICE_ID=your_voice_id_here
+# Optional: Set model (defaults to 'eleven_monolingual_v1')
+ELEVENLABS_MODEL_ID=eleven_monolingual_v1
+
 # Optional backend logging level
 # BROWSER_USE_LOGGING_LEVEL=debug
 ```
@@ -186,14 +202,17 @@ OLLAMA_BASE_URL=http://localhost:11434 # Default if using ollama
 ### 7. Run the Development Servers
 
 #### Terminal 1 (Frontend)
+
 From the root directory:
 
 ```bash
 pnpm dev
 ```
+
 Access at http://localhost:3000
 
 #### Terminal 2 (Backend)
+
 From the backend/ directory:
 
 ```bash
@@ -201,6 +220,7 @@ cd backend
 # If using pip/venv, activate it: source .venv/bin/activate
 uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
+
 API runs at http://localhost:8000
 
 ### 8. Test
@@ -209,6 +229,46 @@ API runs at http://localhost:8000
 2. Grant microphone permissions
 3. Speak a command (e.g., "Open Google and search for cute cat videos")
 4. Watch the browser UI for transcription, status updates, and screenshots
+
+### 8. WebSocket Test Route
+
+The backend includes a test WebSocket route for development and debugging purposes. You can connect to it at:
+
+```
+ws://localhost:8000/ws/test
+```
+
+This route accepts the following message types:
+
+- `ping`: Server responds with `pong`
+- `echo`: Server echoes back the message
+- `status`: Server sends a mock status update
+
+Example using browser console:
+
+```javascript
+// Connect to test WebSocket
+const ws = new WebSocket("ws://localhost:8000/ws/test");
+
+// Listen for messages
+ws.onmessage = (event) => {
+  console.log("Received:", JSON.parse(event.data));
+};
+
+// Send test messages
+ws.send(JSON.stringify({ type: "ping" }));
+ws.send(JSON.stringify({ type: "echo", message: "Hello!" }));
+ws.send(JSON.stringify({ type: "status" }));
+```
+
+This test route is useful for:
+
+- Verifying WebSocket connectivity
+- Testing CORS and security settings
+- Debugging client-side WebSocket handling
+- Development and integration testing
+
+Note: The test route is separate from the main agent WebSocket route (`/ws/{session_id}`) and is intended for development purposes only.
 
 ## 🚀 Deployment
 
@@ -228,6 +288,7 @@ Deploy the Next.js app to Vercel, Netlify, etc:
 ### Backend (/backend)
 
 Deploy to a platform suitable for long-running Python processes:
+
 - Fly.io, Render, Cloud Run, Railway, DigitalOcean Apps, AWS EC2/ECS
 - Often deployed via Docker
 
@@ -288,3 +349,49 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 - [browser-use](https://github.com/user/browser-use) for browser automation
 - [@ricky0123/vad-react](https://github.com/ricky0123/vad-react) for voice activity detection
 - [Next.js](https://nextjs.org/) and [FastAPI](https://fastapi.tiangolo.com/) frameworks
+
+## 🔍 Debugging Features
+
+The application includes a comprehensive debugging interface that helps monitor and troubleshoot the agent's actions:
+
+### Debug Sheet Component
+
+Located at `app/components/DebugSheet.tsx`, the debug panel provides real-time information about:
+
+- URLs visited by the agent
+- Screenshots taken
+- Action names and timestamps
+- Extracted content from pages
+- Errors encountered
+- Model actions and decisions
+
+Features:
+
+- Draggable anywhere in the viewport
+- Minimizable for better screen real estate management
+- Tab-based organization of different data types
+- Real-time updates via WebSocket
+- Timestamp-based history tracking
+
+### WebSocket Debug Messages
+
+The backend now supports a new message type for debugging:
+
+```typescript
+interface AgentUpdateData {
+  type: "debug_info";
+  debug_info?: {
+    urls: TimestampedData<string>[];
+    screenshots: TimestampedData<string>[];
+    action_names: TimestampedData<string>[];
+    extracted_content: TimestampedData<string[]>[];
+    errors: TimestampedData<string>[];
+    model_actions: TimestampedData<string>[];
+  };
+}
+```
+
+### Debug Routes
+
+- `/debugging`: Test route with hardcoded debug data
+- Main application route now includes integrated debugging panel
