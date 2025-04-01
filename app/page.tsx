@@ -15,6 +15,34 @@ import {
 // import { usePlayer } from "@/lib/usePlayer";
 import { track } from "@vercel/analytics";
 import { useMicVAD, utils } from "@ricky0123/vad-react";
+import DebugSheet, { AgentHistoryData } from "@/components/DebugSheet";
+// Remove incorrect import and define debug data here
+// import { hardcodedHistory } from "./debugging/page";
+
+// Example debug data for development
+const debugHistory: AgentHistoryData = {
+  snapshotTimestamp: new Date().toISOString(),
+  urls: [{ timestamp: new Date().toISOString(), value: "https://example.com" }],
+  screenshots: [
+    { timestamp: new Date().toISOString(), value: "screenshot_latest.png" },
+  ],
+  action_names: [
+    { timestamp: new Date().toISOString(), value: "Current Action" },
+  ],
+  extracted_content: [
+    {
+      timestamp: new Date().toISOString(),
+      value: ["Latest extracted content"],
+    },
+  ],
+  errors: [],
+  model_actions: [
+    {
+      timestamp: new Date().toISOString(),
+      value: JSON.stringify({ action: "latest_action", details: "..." }),
+    },
+  ],
+};
 
 // Add a type for the error object to help TypeScript
 interface VADError {
@@ -34,7 +62,7 @@ type AgentStatus =
   | "disconnected"
   | "unknown";
 interface AgentUpdateData {
-  type: "status" | "screenshot" | "done" | "error" | "ping";
+  type: "status" | "screenshot" | "done" | "error" | "ping" | "debug_info";
   status?: AgentStatus;
   step?: number;
   goal?: string;
@@ -60,6 +88,8 @@ export default function Home() {
   const [finalResult, setFinalResult] = useState<string | null>(null);
   const [agentStep, setAgentStep] = useState<number>(0);
   const wsRef = useRef<WebSocket | null>(null);
+
+  const [debugInfo, setDebugInfo] = useState<AgentHistoryData>(debugHistory);
 
   // --- Form Submission State (using React 19's useFormState) ---
   const [formSubmissionState, formAction] = useFormState(handleSubmitAction, {
@@ -171,6 +201,19 @@ export default function Home() {
                 toast.error(`Agent Error: ${data.message || "Unknown error"}`);
                 setAgentStatus("error");
                 setCurrentGoal(`Error: ${data.message || "Unknown"}`);
+                break;
+              case "debug_info":
+                setDebugInfo((prevInfo) => ({
+                  ...prevInfo,
+                  snapshotTimestamp: new Date().toISOString(),
+                  action_names: [
+                    {
+                      timestamp: new Date().toISOString(),
+                      value: data.last_action || "Unknown Action",
+                    },
+                    ...(prevInfo?.action_names || []),
+                  ],
+                }));
                 break;
               default:
                 console.warn("Unknown WebSocket message type:", data.type);
@@ -366,177 +409,212 @@ export default function Home() {
     agentStatus === "starting" ||
     agentStatus === "transcribing";
 
+  // Update debug data when screenshot changes
+  useEffect(() => {
+    if (screenshotData) {
+      setDebugInfo((prev) => ({
+        ...prev,
+        screenshots: [
+          {
+            timestamp: new Date().toISOString(),
+            value: `Screenshot at step ${agentStep}`,
+          },
+          ...prev.screenshots,
+        ],
+      }));
+    }
+  }, [screenshotData, agentStep]);
+
   return (
     <>
-      <div className="w-full max-w-5xl mb-6 p-4 border border-neutral-300 dark:border-neutral-700 rounded-lg bg-white dark:bg-black min-h-[400px] flex flex-col md:flex-row gap-4 shadow-sm">
-        <div className="flex-1 space-y-2 pr-4 border-r-0 md:border-r border-neutral-200 dark:border-neutral-800">
-          <button onClick={() => setSessionId("test-123")}>
-            Connect WS Test
-          </button>
-          <h2 className="text-lg font-semibold flex items-center gap-2">
-            Agent Status:
-            <span
-              className={`font-mono text-xs px-2 py-0.5 rounded font-medium ${
-                agentStatus === "running"
-                  ? "bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200"
-                  : agentStatus === "done_success"
-                  ? "bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-200"
-                  : agentStatus === "done_failure" || agentStatus === "paused"
-                  ? "bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-200"
-                  : agentStatus === "error" || agentStatus === "disconnected"
-                  ? "bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-200"
-                  : "bg-neutral-100 dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400"
-              }`}
-            >
-              {agentStatus}
-            </span>
-            {agentStatus === "running" && <LoadingIcon />}
-          </h2>
-          {sessionId && (
-            <p className="text-xs text-neutral-500 dark:text-neutral-500">
-              Session: {sessionId.substring(0, 8)}...
-            </p>
-          )}
-          <div className="text-sm text-neutral-700 dark:text-neutral-300 space-y-1 pt-2">
-            <p>
-              <strong>Step:</strong> {agentStep > 0 ? agentStep : "N/A"}
-            </p>
-            <p>
-              <strong>Goal:</strong>{" "}
-              {currentGoal ||
-                (agentStatus === "idle" ? "Waiting for task..." : "...")}
-            </p>
-            <p>
-              <strong>Action:</strong> {lastAction || "None"}
-            </p>
-            {finalResult && (
-              <p className="font-medium mt-3 pt-3 border-t border-neutral-200 dark:border-neutral-800">
-                <strong>Result:</strong> {finalResult}
+      {/* Main Application Content */}
+      <div className="flex flex-col min-h-screen relative">
+        <div className="w-full max-w-5xl mb-6 p-4 border border-neutral-300 dark:border-neutral-700 rounded-lg bg-white dark:bg-black min-h-[400px] flex flex-col md:flex-row gap-4 shadow-sm">
+          <div className="flex-1 space-y-2 pr-4 border-r-0 md:border-r border-neutral-200 dark:border-neutral-800">
+            <button onClick={() => setSessionId("test-123")}>
+              Connect WS Test
+            </button>
+            <h2 className="text-lg font-semibold flex items-center gap-2">
+              Agent Status:
+              <span
+                className={`font-mono text-xs px-2 py-0.5 rounded font-medium ${
+                  agentStatus === "running"
+                    ? "bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200"
+                    : agentStatus === "done_success"
+                    ? "bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-200"
+                    : agentStatus === "done_failure" || agentStatus === "paused"
+                    ? "bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-200"
+                    : agentStatus === "error" || agentStatus === "disconnected"
+                    ? "bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-200"
+                    : "bg-neutral-100 dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400"
+                }`}
+              >
+                {agentStatus}
+              </span>
+              {agentStatus === "running" && <LoadingIcon />}
+            </h2>
+            {sessionId && (
+              <p className="text-xs text-neutral-500 dark:text-neutral-500">
+                Session: {sessionId.substring(0, 8)}...
               </p>
+            )}
+            <div className="text-sm text-neutral-700 dark:text-neutral-300 space-y-1 pt-2">
+              <p>
+                <strong>Step:</strong> {agentStep > 0 ? agentStep : "N/A"}
+              </p>
+              <p>
+                <strong>Goal:</strong>{" "}
+                {currentGoal ||
+                  (agentStatus === "idle" ? "Waiting for task..." : "...")}
+              </p>
+              <p>
+                <strong>Action:</strong> {lastAction || "None"}
+              </p>
+              {finalResult && (
+                <p className="font-medium mt-3 pt-3 border-t border-neutral-200 dark:border-neutral-800">
+                  <strong>Result:</strong> {finalResult}
+                </p>
+              )}
+            </div>
+          </div>
+          <div className="w-full md:w-1/2 lg:w-3/5 border border-neutral-200 dark:border-neutral-800 rounded-md overflow-hidden bg-neutral-100 dark:bg-neutral-900 flex items-center justify-center aspect-[16/10] md:aspect-auto">
+            {screenshotData ? (
+              <img
+                src={`data:image/png;base64,${screenshotData}`}
+                alt="Agent Screenshot"
+                className="object-contain max-w-full max-h-full"
+                width={1280}
+                height={800}
+              />
+            ) : (
+              <span className="text-neutral-500 text-sm p-4">
+                {agentStatus === "running"
+                  ? "Waiting for screenshot..."
+                  : "No screenshot"}
+              </span>
             )}
           </div>
         </div>
-        <div className="w-full md:w-1/2 lg:w-3/5 border border-neutral-200 dark:border-neutral-800 rounded-md overflow-hidden bg-neutral-100 dark:bg-neutral-900 flex items-center justify-center aspect-[16/10] md:aspect-auto">
-          {screenshotData ? (
-            <img
-              src={`data:image/png;base64,${screenshotData}`}
-              alt="Agent Screenshot"
-              className="object-contain max-w-full max-h-full"
-              width={1280}
-              height={800}
+
+        <div className="pb-4 min-h-10" />
+
+        <form
+          className="rounded-full bg-neutral-100 dark:bg-neutral-900 flex items-center gap-1 w-full max-w-3xl border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 focus-within:border-neutral-500 dark:hover:border-neutral-600 dark:focus-within:border-neutral-500 shadow-sm transition-colors pr-2"
+          onSubmit={handleTextFormSubmit}
+        >
+          <input
+            type="text"
+            className="bg-transparent focus:outline-none pl-4 pr-2 py-4 w-full placeholder:text-neutral-500 dark:placeholder:text-neutral-500 text-sm flex-grow"
+            required
+            placeholder={
+              vad.listening
+                ? "Listening via microphone..."
+                : isAgentBusy
+                ? "Agent is running..."
+                : "Type a command or press the mic..."
+            }
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            ref={inputRef}
+            disabled={isAgentBusy || vad.userSpeaking || vad.listening}
+          />
+          {/* Submit button for text */}
+          <button
+            type="submit"
+            className="p-2 text-neutral-600 hover:text-black dark:text-neutral-400 dark:hover:text-white disabled:opacity-40 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors flex-shrink-0"
+            disabled={isAgentBusy || !input.trim()}
+            aria-label="Submit text command"
+          >
+            {isSubmitting || agentStatus === "starting" ? (
+              <LoadingIcon />
+            ) : (
+              <EnterIcon />
+            )}
+          </button>
+          {/* NEW Microphone Button */}
+          <button
+            type="button"
+            onClick={handleMicClick}
+            className={`p-2 rounded-full transition-colors flex-shrink-0 ${
+              vad.listening
+                ? "text-red-500 bg-red-100 dark:bg-red-900 dark:text-red-300 hover:bg-red-200 dark:hover:bg-red-800"
+                : "text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900 disabled:opacity-40"
+            }`}
+            disabled={isAgentBusy || vad.loading}
+            aria-label={vad.listening ? "Stop listening" : "Start listening"}
+          >
+            {vad.loading ? (
+              <LoadingIcon />
+            ) : vad.listening ? (
+              <StopCircleIcon />
+            ) : (
+              <MicrophoneIcon />
+            )}
+          </button>
+        </form>
+
+        <div className="text-neutral-500 dark:text-neutral-500 pt-4 text-center max-w-xl text-balance min-h-28 text-xs space-y-2">
+          {lastTranscript && (
+            <p className="italic">You said: "{lastTranscript}"</p>
+          )}
+
+          {agentStatus === "idle" && !lastTranscript && (
+            <>
+              <p className="font-medium">Speak (press mic) or type a task.</p>
+              {vad.loading ? (
+                <p>Loading speech detection...</p>
+              ) : (
+                <p>
+                  Mic Status:{" "}
+                  {vad.listening
+                    ? "Listening..."
+                    : vad.userSpeaking
+                    ? "Processing..."
+                    : "Ready"}
+                </p>
+              )}
+            </>
+          )}
+          {formSubmissionState.status === "error" && (
+            <p className="text-red-500">
+              Submission Error: {formSubmissionState.error}
+            </p>
+          )}
+        </div>
+
+        <div
+          className={clsx(
+            "fixed bottom-10 left-1/2 -translate-x-1/2 size-24 blur-2xl rounded-full bg-gradient-to-b from-blue-300 to-blue-500 dark:from-blue-700 dark:to-blue-900 -z-10 transition-all duration-300 ease-in-out",
+            {
+              "opacity-0 scale-50": vad.loading || agentStatus !== "idle",
+              "opacity-30":
+                !vad.loading &&
+                !vad.userSpeaking &&
+                !vad.listening &&
+                agentStatus === "idle",
+              "opacity-50 scale-100":
+                vad.listening && !vad.userSpeaking && agentStatus === "idle",
+              "opacity-70 scale-110":
+                vad.userSpeaking && agentStatus === "idle",
+            }
+          )}
+        />
+      </div>
+
+      {/* Debug Sheet Portal Container - Floating above everything */}
+      <div className="fixed inset-0 pointer-events-none">
+        <div className="pointer-events-auto">
+          {typeof window !== "undefined" && (
+            <DebugSheet
+              historyData={debugInfo}
+              defaultPosition={{
+                x: typeof window !== "undefined" ? window.innerWidth - 520 : 0,
+                y: 20,
+              }}
             />
-          ) : (
-            <span className="text-neutral-500 text-sm p-4">
-              {agentStatus === "running"
-                ? "Waiting for screenshot..."
-                : "No screenshot"}
-            </span>
           )}
         </div>
       </div>
-
-      <div className="pb-4 min-h-10" />
-
-      <form
-        className="rounded-full bg-neutral-100 dark:bg-neutral-900 flex items-center gap-1 w-full max-w-3xl border border-neutral-300 dark:border-neutral-700 hover:border-neutral-400 focus-within:border-neutral-500 dark:hover:border-neutral-600 dark:focus-within:border-neutral-500 shadow-sm transition-colors pr-2"
-        onSubmit={handleTextFormSubmit}
-      >
-        <input
-          type="text"
-          className="bg-transparent focus:outline-none pl-4 pr-2 py-4 w-full placeholder:text-neutral-500 dark:placeholder:text-neutral-500 text-sm flex-grow"
-          required
-          placeholder={
-            vad.listening
-              ? "Listening via microphone..."
-              : isAgentBusy
-              ? "Agent is running..."
-              : "Type a command or press the mic..."
-          }
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          ref={inputRef}
-          disabled={isAgentBusy || vad.userSpeaking || vad.listening}
-        />
-        {/* Submit button for text */}
-        <button
-          type="submit"
-          className="p-2 text-neutral-600 hover:text-black dark:text-neutral-400 dark:hover:text-white disabled:opacity-40 rounded-full hover:bg-neutral-200 dark:hover:bg-neutral-800 transition-colors flex-shrink-0"
-          disabled={isAgentBusy || !input.trim()}
-          aria-label="Submit text command"
-        >
-          {isSubmitting || agentStatus === "starting" ? (
-            <LoadingIcon />
-          ) : (
-            <EnterIcon />
-          )}
-        </button>
-        {/* NEW Microphone Button */}
-        <button
-          type="button"
-          onClick={handleMicClick}
-          className={`p-2 rounded-full transition-colors flex-shrink-0 ${
-            vad.listening
-              ? "text-red-500 bg-red-100 dark:bg-red-900 dark:text-red-300 hover:bg-red-200 dark:hover:bg-red-800"
-              : "text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900 disabled:opacity-40"
-          }`}
-          disabled={isAgentBusy || vad.loading}
-          aria-label={vad.listening ? "Stop listening" : "Start listening"}
-        >
-          {vad.loading ? (
-            <LoadingIcon />
-          ) : vad.listening ? (
-            <StopCircleIcon />
-          ) : (
-            <MicrophoneIcon />
-          )}
-        </button>
-      </form>
-
-      <div className="text-neutral-500 dark:text-neutral-500 pt-4 text-center max-w-xl text-balance min-h-28 text-xs space-y-2">
-        {lastTranscript && (
-          <p className="italic">You said: "{lastTranscript}"</p>
-        )}
-
-        {agentStatus === "idle" && !lastTranscript && (
-          <>
-            <p className="font-medium">Speak (press mic) or type a task.</p>
-            {vad.loading ? (
-              <p>Loading speech detection...</p>
-            ) : (
-              <p>
-                Mic Status:{" "}
-                {vad.listening
-                  ? "Listening..."
-                  : vad.userSpeaking
-                  ? "Processing..."
-                  : "Ready"}
-              </p>
-            )}
-          </>
-        )}
-        {formSubmissionState.status === "error" && (
-          <p className="text-red-500">
-            Submission Error: {formSubmissionState.error}
-          </p>
-        )}
-      </div>
-
-      <div
-        className={clsx(
-          "fixed bottom-10 left-1/2 -translate-x-1/2 size-24 blur-2xl rounded-full bg-gradient-to-b from-blue-300 to-blue-500 dark:from-blue-700 dark:to-blue-900 -z-10 transition-all duration-300 ease-in-out",
-          {
-            "opacity-0 scale-50": vad.loading || agentStatus !== "idle",
-            "opacity-30":
-              !vad.loading &&
-              !vad.userSpeaking &&
-              !vad.listening &&
-              agentStatus === "idle",
-            "opacity-50 scale-100":
-              vad.listening && !vad.userSpeaking && agentStatus === "idle",
-            "opacity-70 scale-110": vad.userSpeaking && agentStatus === "idle",
-          }
-        )}
-      />
     </>
   );
 }

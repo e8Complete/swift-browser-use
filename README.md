@@ -10,6 +10,7 @@ A voice-controlled web interface for interacting with a browser automation agent
 - **Browser Control**: Uses the `browser-use` library to automate browser actions based on voice commands
 - **Real-time Updates**: WebSockets for live agent status, goals, actions, and browser screenshots
 - **Modern Stack**: Built with Next.js (React) and Tailwind CSS, deployable on Vercel or similar platforms
+- **Debug Interface**: Draggable and minimizable debug panel showing real-time agent actions, screenshots, and extracted content
 
 ## 📋 Project Structure
 
@@ -248,66 +249,26 @@ Example using browser console:
 ```javascript
 // Connect to test WebSocket
 const ws = new WebSocket("ws://localhost:8000/ws/test");
+
+// Listen for messages
+ws.onmessage = (event) => {
+  console.log("Received:", JSON.parse(event.data));
+};
+
+// Send test messages
+ws.send(JSON.stringify({ type: "ping" }));
+ws.send(JSON.stringify({ type: "echo", message: "Hello!" }));
+ws.send(JSON.stringify({ type: "status" }));
 ```
 
-## 🔄 Recent Updates
+This test route is useful for:
 
-### WebSocket Improvements
+- Verifying WebSocket connectivity
+- Testing CORS and security settings
+- Debugging client-side WebSocket handling
+- Development and integration testing
 
-- Enhanced WebSocket state handling using `WebSocketState` from Starlette
-- Improved connection state checks for more reliable message delivery
-- Better cleanup of disconnected WebSocket connections
-- Proper state comparison for WebSocket lifecycle management
-
-### Debug Information
-
-- Added comprehensive debug info extraction from agent runs
-- Debug payload includes:
-  - URLs visited
-  - Action names executed
-  - Extracted content
-  - Errors encountered
-  - Model actions taken
-- Improved error handling and logging throughout the application
-
-### Error Handling
-
-- Enhanced error handling in WebSocket communication
-- Better management of connection states and disconnections
-- Improved logging for debugging connection issues
-- Graceful handling of connection cleanup
-
-### Environment Variables
-
-The following new environment variables are available for configuration:
-
-```env
-# WebSocket allowed origins (comma-separated)
-WEBSOCKET_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
-
-# Browser configuration
-BROWSER_HEADLESS=false  # Set to true for headless mode
-```
-
-## 🐛 Debugging
-
-### WebSocket Connection Issues
-
-If you encounter WebSocket connection problems:
-
-1. Check the allowed origins in your environment configuration
-2. Verify the WebSocket URL matches your deployment setup
-3. Monitor the backend logs for connection state changes
-4. Ensure proper cleanup of connections in development
-
-### Debug Information
-
-To access debug information during agent runs:
-
-1. Monitor the WebSocket messages for type "debug_info"
-2. Check the backend logs for detailed state extraction
-3. Review the agent's history for comprehensive debugging
-4. Use the status endpoint for current agent state
+Note: The test route is separate from the main agent WebSocket route (`/ws/{session_id}`) and is intended for development purposes only.
 
 ## 🚀 Deployment
 
@@ -388,3 +349,49 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 - [browser-use](https://github.com/user/browser-use) for browser automation
 - [@ricky0123/vad-react](https://github.com/ricky0123/vad-react) for voice activity detection
 - [Next.js](https://nextjs.org/) and [FastAPI](https://fastapi.tiangolo.com/) frameworks
+
+## 🔍 Debugging Features
+
+The application includes a comprehensive debugging interface that helps monitor and troubleshoot the agent's actions:
+
+### Debug Sheet Component
+
+Located at `app/components/DebugSheet.tsx`, the debug panel provides real-time information about:
+
+- URLs visited by the agent
+- Screenshots taken
+- Action names and timestamps
+- Extracted content from pages
+- Errors encountered
+- Model actions and decisions
+
+Features:
+
+- Draggable anywhere in the viewport
+- Minimizable for better screen real estate management
+- Tab-based organization of different data types
+- Real-time updates via WebSocket
+- Timestamp-based history tracking
+
+### WebSocket Debug Messages
+
+The backend now supports a new message type for debugging:
+
+```typescript
+interface AgentUpdateData {
+  type: "debug_info";
+  debug_info?: {
+    urls: TimestampedData<string>[];
+    screenshots: TimestampedData<string>[];
+    action_names: TimestampedData<string>[];
+    extracted_content: TimestampedData<string[]>[];
+    errors: TimestampedData<string>[];
+    model_actions: TimestampedData<string>[];
+  };
+}
+```
+
+### Debug Routes
+
+- `/debugging`: Test route with hardcoded debug data
+- Main application route now includes integrated debugging panel

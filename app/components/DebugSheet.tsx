@@ -1,8 +1,10 @@
 // app/components/DebugSheet.tsx
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import clsx from "clsx";
+import { Rnd } from "react-rnd";
+import { MinimizeIcon, MaximizeIcon } from "@/lib/icons";
 
 // Define structure for individual data points with timestamps
 export interface TimestampedData<T = string> {
@@ -33,6 +35,17 @@ const tabs: DebugCategory[] = [
   "model_actions",
 ];
 
+// Define dimensions for expanded/minimized states
+const expandedWidth = 480;
+const expandedHeightVh = 85;
+const minimizedWidth = 256;
+const minimizedHeight = 58;
+
+interface DebugSheetProps {
+  historyData: AgentHistoryData | null;
+  defaultPosition?: { x: number; y: number };
+}
+
 // Component to render individual data items with timestamps
 const DataItem = ({
   timestamp,
@@ -47,18 +60,47 @@ const DataItem = ({
   </div>
 );
 
-interface DebugSheetProps {
-  historyData: AgentHistoryData | null;
-}
-
-export default function DebugSheet({ historyData }: DebugSheetProps) {
+export default function DebugSheet({
+  historyData,
+  defaultPosition,
+}: DebugSheetProps) {
   const [activeTab, setActiveTab] = useState<DebugCategory>(tabs[0]);
+  const [isMinimized, setIsMinimized] = useState(false);
+  const [defaultHeight, setDefaultHeight] = useState(800);
+  const [defaultPos, setDefaultPos] = useState({ x: 20, y: 20 });
 
-  if (!historyData) {
-    return null; // Don't render anything if no data is available
-  }
+  // Handle window dimensions after mount
+  useEffect(() => {
+    const calculateDimensions = () => {
+      setDefaultHeight(
+        Math.min(800, window.innerHeight * (expandedHeightVh / 100))
+      );
+      setDefaultPos({
+        x: window.innerWidth - expandedWidth - 20,
+        y: 20,
+      });
+    };
+
+    calculateDimensions();
+    window.addEventListener("resize", calculateDimensions);
+
+    return () => window.removeEventListener("resize", calculateDimensions);
+  }, []);
+
+  const toggleMinimize = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setIsMinimized(!isMinimized);
+  };
 
   const renderTabData = (tab: DebugCategory) => {
+    if (!historyData) {
+      return (
+        <p className="text-sm text-gray-500 p-4 text-center">
+          No data available.
+        </p>
+      );
+    }
+
     const data = historyData[tab];
 
     if (!data || data.length === 0) {
@@ -136,49 +178,99 @@ export default function DebugSheet({ historyData }: DebugSheetProps) {
   };
 
   return (
-    <div
-      className={clsx(
-        "fixed right-4 top-4 bottom-4",
-        "w-[480px]",
-        "bg-white border border-gray-200 rounded-lg",
-        "shadow-2xl",
-        "flex flex-col",
-        "h-[calc(100vh-2rem)]",
-        "z-20"
-      )}
+    <Rnd
+      size={
+        isMinimized
+          ? { width: minimizedWidth, height: minimizedHeight }
+          : { width: expandedWidth, height: defaultHeight }
+      }
+      minWidth={minimizedWidth}
+      minHeight={minimizedHeight}
+      maxWidth={"80vw"}
+      maxHeight={"90vh"}
+      default={
+        defaultPosition
+          ? {
+              ...defaultPosition,
+              width: expandedWidth,
+              height: defaultHeight,
+            }
+          : {
+              ...defaultPos,
+              width: expandedWidth,
+              height: defaultHeight,
+            }
+      }
+      bounds="body"
+      dragHandleClassName="drag-handle"
+      enableResizing={!isMinimized}
+      className="z-[9999]"
+      style={{
+        position: "fixed",
+        visibility: "visible",
+        pointerEvents: "auto",
+      }}
     >
-      {/* Header */}
-      <div className="p-4 border-b border-gray-200 flex-shrink-0 rounded-t-lg">
-        <h2 className="text-lg font-semibold text-gray-800">
-          Debugging Information
-        </h2>
-        <p className="text-xs text-gray-500 mt-1">
-          Snapshot Time: {historyData.snapshotTimestamp}
-        </p>
-      </div>
-
-      {/* Horizontal Tabs (with wrapping) */}
-      <div className="flex flex-wrap gap-1 border-b border-gray-200 px-3 py-2 bg-gray-50 flex-shrink-0">
-        {tabs.map((tab) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={clsx(
-              "px-3 py-1.5 text-xs font-medium rounded-md focus:outline-none whitespace-nowrap transition-colors duration-150 ease-in-out",
-              activeTab === tab
-                ? "bg-blue-600 text-white shadow-sm"
-                : "text-gray-600 hover:bg-gray-200"
+      <div
+        className={clsx(
+          "bg-white border border-gray-300 rounded-lg",
+          "shadow-lg",
+          "flex flex-col",
+          "w-full h-full",
+          "overflow-hidden"
+        )}
+      >
+        <div className="drag-handle p-4 border-b border-gray-200 flex-shrink-0 rounded-t-lg cursor-move flex justify-between items-center bg-gray-50">
+          <div>
+            <h2 className="text-base font-semibold text-gray-800">
+              Debugging Information
+            </h2>
+            {historyData && !isMinimized && (
+              <p className="text-xs text-gray-500 mt-1">
+                Snapshot: {historyData.snapshotTimestamp}
+              </p>
             )}
+          </div>
+          <button
+            onClick={toggleMinimize}
+            className="p-1 rounded hover:bg-gray-200 text-gray-500 hover:text-gray-800"
+            aria-label={isMinimized ? "Maximize" : "Minimize"}
+            title={isMinimized ? "Maximize" : "Minimize"}
           >
-            {tab.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase())}
+            {isMinimized ? <MaximizeIcon /> : <MinimizeIcon />}
           </button>
-        ))}
-      </div>
+        </div>
 
-      {/* Tab Content Area */}
-      <div className="flex-grow overflow-y-auto rounded-b-lg">
-        {renderTabData(activeTab)}
+        {!isMinimized && (
+          <>
+            <div className="flex flex-wrap gap-1 border-b border-gray-200 px-3 py-2 bg-gray-50 flex-shrink-0">
+              {tabs.map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab)}
+                  disabled={!historyData}
+                  className={clsx(
+                    "px-3 py-1.5 text-xs font-medium rounded-md focus:outline-none whitespace-nowrap transition-colors duration-150 ease-in-out",
+                    !historyData
+                      ? "text-gray-400 bg-gray-100 cursor-not-allowed"
+                      : activeTab === tab
+                      ? "bg-blue-600 text-white shadow-sm"
+                      : "text-gray-600 hover:bg-gray-200"
+                  )}
+                >
+                  {tab
+                    .replace(/_/g, " ")
+                    .replace(/\b\w/g, (l) => l.toUpperCase())}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex-grow overflow-y-auto rounded-b-lg">
+              {renderTabData(activeTab)}
+            </div>
+          </>
+        )}
       </div>
-    </div>
+    </Rnd>
   );
 }

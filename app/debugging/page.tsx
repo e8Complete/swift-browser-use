@@ -83,8 +83,10 @@ export default function DebuggingPage() {
           <p>Scrollable Content...</p>
         </div>
       </div>
-      {/* Render the Debug Sheet Component */}
-      <DebugSheet historyData={historyData} />
+      {/* Position the Debug Sheet with a wrapper div */}
+      <div className="fixed right-4 top-4 bottom-4 w-[480px] z-20">
+        <DebugSheet historyData={historyData} />
+      </div>
     </div>
   );
 }
